@@ -1,6 +1,6 @@
 #version 450
 
-layout(set = 0, binding = 0) uniform sampler2D samplerLightingSSR;
+layout(set = 0, binding = 0) uniform sampler2D samplerLighting;
 layout(set = 0, binding = 1) uniform sampler2D samplerLighting1;
 layout(set = 0, binding = 2) uniform sampler2D samplerAlbedo2;
 layout(set = 0, binding = 3) uniform sampler2D samplerGbufferDepth;
@@ -8,7 +8,6 @@ layout(set = 0, binding = 4) uniform sampler2D samplerGbuffer1Depth;
 layout(set = 0, binding = 5) uniform sampler2D samplerGbuffer2Depth;
 layout(set = 0, binding = 6) uniform usampler2D samplerSegmentation0;
 layout(set = 0, binding = 7) uniform usampler2D samplerSegmentation1;
-layout(set = 0, binding = 8) uniform sampler2D samplerMotionDirection;
 
 layout(location = 0) in vec2 inUV;
 layout(location = 0) out vec4 outColor;
@@ -92,22 +91,12 @@ vec4 colors[60] = {
 };
 
 
-const float N_MOTION_BLUR_SAMPLES = 10.;
-
 void main() {
   float d0 = texture(samplerGbufferDepth, inUV).x;
   float d1 = texture(samplerGbuffer1Depth, inUV).x;
   float d2 = texture(samplerGbuffer2Depth, inUV).x;
 
-  vec2 dir = texture(samplerMotionDirection, inUV).xy;
-
-  // apply motion blur
-  vec4 outColor0 = vec4(0.);
-  for (float i = 0; i < N_MOTION_BLUR_SAMPLES; ++i) {
-    outColor0 += texture(samplerLightingSSR, inUV + dir * ((i + 0.5) / N_MOTION_BLUR_SAMPLES - 0.5));
-  }
-  outColor0 /= N_MOTION_BLUR_SAMPLES;
-
+  vec4 outColor0 = texture(samplerLighting, inUV);
   vec4 outColor1 = texture(samplerLighting1, inUV);
   vec4 outColor2 = texture(samplerAlbedo2, inUV);
 
