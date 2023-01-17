@@ -9,17 +9,13 @@ import time
 
 def main():
     sim = sapien.Engine()
-    sim.set_log_level('warning')
-    sapien.KuafuRenderer.set_log_level('warning')
-
-    render_config = sapien.KuafuConfig()
-    render_config.use_viewer = False
-    render_config.spp = 32
-    render_config.max_bounces = 8
-    render_config.use_denoiser = True
-
-    renderer = sapien.KuafuRenderer(render_config)
+    renderer = sapien.VulkanRenderer()
     sim.set_renderer(renderer)
+
+    sapien.render_config.camera_shader_dir = "rt"
+    sapien.render_config.rt_samples_per_pixel = 32
+    sapien.render_config.rt_max_path_depth = 8
+    sapien.render_config.rt_use_denoiser = True
 
     scene_config = sapien.SceneConfig()
     scene = sim.create_scene(scene_config)
@@ -42,11 +38,12 @@ def main():
 
     builder = scene.create_actor_builder()
     material = renderer.create_material()
-    material.ior = 1.4
+    material.ior = 1.2
     material.transmission = 1.0
     material.base_color = [1.0, 1.0, 1.0, 1.0]
     material.roughness = 0.3
-    material.metallic = 0.1
+    material.metallic = 0.0
+    # material.metallic = 0.1
     builder.add_sphere_visual(radius=0.07, material=material)
     builder.add_sphere_collision(radius=0.07)
     sphere2 = builder.build()
