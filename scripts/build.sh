@@ -84,11 +84,11 @@ function build_pybind() {
 build_sapien
 if [ -z "${VERSION}" ]
 then
-   build_pybind 39
-   build_pybind 310
-   build_pybind 311
+#    build_pybind 39
+#    build_pybind 310
+#    build_pybind 311
    build_pybind 312
-   build_pybind 313
+#    build_pybind 313
 else
    build_pybind $VERSION
 fi
