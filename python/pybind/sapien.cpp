@@ -305,14 +305,19 @@ Generator<int> init_sapien(py::module &m) {
       .def_property_readonly(
           "__cuda_array_interface__",
           [](CudaArrayHandle &array) {
+            static thread_local std::once_flag init_flag;
+            static thread_local bool support_uint_exc8 = false;
             py::tuple shape = py::cast(array.shape);
             py::tuple strides = py::cast(array.strides);
             std::string type = array.type;
-
-            // torch does not support uint type except uint8
-            // if (type != "u1" && type[0] == 'u') {
-            //   type = "i" + type.substr(1);
-            // }
+            
+            std::call_once(init_flag, [&]() {
+                py::object torch = py::module_::import("torch");
+                support_uint_exc8 = py::hasattr(torch, "uint16") && py::hasattr(torch, "uint32") && py::hasattr(torch, "uint64");
+            });
+            if (!support_uint_exc8 && type != "u1" && type[0] == 'u') {
+                type = "i" + type.substr(1);
+            }
 
             return py::dict("shape"_a = shape, "strides"_a = strides, "typestr"_a = type,
                             "data"_a =
