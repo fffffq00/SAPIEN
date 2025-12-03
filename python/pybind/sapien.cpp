@@ -319,22 +319,61 @@ Generator<int> init_sapien(py::module &m) {
                                 py::make_tuple(reinterpret_cast<intptr_t>(array.ptr), false),
                             "version"_a = 2);
           })
-      .def("torch",
-           [](CudaArrayHandle &array) {
-             // torch does not support uint except uint8
-             CudaArrayHandle newArray = array;
-             if (array.type != "u1" && array.type[0] == 'u') {
-               newArray.type = "i" + array.type.substr(1);
-             }
 
-             py::object obj = py::cast(newArray);
-             auto as_tensor = py::module_::import("torch").attr("as_tensor");
-
-             std::string device_str = array.cudaId >= 0 ? 
-                                 "cuda:" + std::to_string(array.cudaId) : "cuda";  
-             return as_tensor("data"_a = obj, "device"_a = device_str);
-           })
 #ifdef SAPIEN_CUDA
+       .def("torch",
+        [](CudaArrayHandle &array) -> py::object {
+
+            static thread_local PyObject* to_torch_func_ptr = nullptr;
+            static thread_local bool use_dlpack = true;
+            static thread_local std::once_flag init_flag;
+             
+            std::call_once(init_flag, [&]() {
+                py::object torch = py::module_::import("torch");
+                std::string version_str = torch.attr("__version__").cast<std::string>();
+                try{
+                     // find version of torch
+                    size_t pos = version_str.find_first_not_of("0123456789."); //
+                    if (pos != 0 && pos != std::string::npos) {
+                        version_str = version_str.substr(0, pos);
+                    }
+                    py::list version_parts = py::str(version_str).attr("split")(".");
+                    int length = py::len(version_parts);
+                    while (length < 3) {
+                        version_parts.append(py::int_(0));
+                        length += 1;
+                    }
+                    int major = py::int_(version_parts[0]).cast<int>();
+                    int minor = py::int_(version_parts[1]).cast<int>();
+                    int patch = py::int_(version_parts[2]).cast<int>();
+                    // if version > 2.5.1, use dlpack, otherwise use as_tensor
+                    use_dlpack = (major > 2) ||
+                                (major == 2 && minor > 5) ||
+                                (major == 2 && minor == 5 && patch > 1);
+                }
+                    catch(const std::exception& e)
+                    {
+                        std::cerr << e.what() << '\n';
+                        std::cerr << "Unexpected PyTorch version string: " + version_str + ", fallback to use dlpack." << std::endl;
+                }
+                
+                if (use_dlpack) {
+                    py::object func = torch.attr("from_dlpack");
+                    to_torch_func_ptr = func.ptr();
+                } else {
+                    py::object func = torch.attr("as_tensor");
+                    to_torch_func_ptr = func.ptr();
+                }
+                Py_INCREF(to_torch_func_ptr);
+            });
+
+             py::function to_torch_func = py::reinterpret_borrow<py::function>(to_torch_func_ptr);
+             if (!use_dlpack) {
+                 return to_torch_func(py::cast(array));
+             }
+             py::capsule capsule = DLPackToCapsule(array.toDLPack());
+             return to_torch_func(capsule);
+        })
       .def("jax",
            [](CudaArrayHandle &array) {
              auto from_dlpack = py::module_::import("jax").attr("dlpack").attr("from_dlpack");
