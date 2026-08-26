@@ -511,22 +511,22 @@ void PhysxSystemGpu::copyContactData() {
     mCudaContactCount = CudaArray({1}, "u4");
   }
 
+  // Use maxRigidContactCount from PhysX GPU memory config as buffer size
+  // to avoid the two-pass copy (first get count, then copy data)
+  if (mMaxContactPairs <= 0) {
+    mMaxContactPairs = PhysxDefault::getGpuMemoryConfig().maxRigidContactCount;
+    if (mMaxContactPairs <= 0) {
+      mMaxContactPairs = 1024; // fallback
+    }
+  }
+
   if (!mCudaContactBuffer.ptr) {
-    mCudaContactBuffer = CudaArray({1024, sizeof(PxGpuContactPair)}, "u1");
+    mCudaContactBuffer = CudaArray({mMaxContactPairs, sizeof(PxGpuContactPair)}, "u1");
   }
 
-  SAPIEN_PROFILE_BLOCK_BEGIN("fetch contact count");
-  mPxScene->copyContactData(mCudaContactBuffer.ptr, 0, mCudaContactCount.ptr);
-  cudaMemcpy(&mContactCount, mCudaContactCount.ptr, sizeof(int), cudaMemcpyDeviceToHost);
-  SAPIEN_PROFILE_BLOCK_END;
-
-  int size = upperPowerOf2(mContactCount);
-  if (mCudaContactBuffer.shape[0] < size) {
-    SAPIEN_PROFILE_BLOCK("re-allocate contact buffer");
-    mCudaContactBuffer = CudaArray({size, sizeof(PxGpuContactPair)}, "u1");
-  }
-
-  mPxScene->copyContactData(mCudaContactBuffer.ptr, size, mCudaContactCount.ptr);
+  // Single-pass copy: copy up to mMaxContactPairs, actual count stays on GPU
+  // No DeviceToHost synchronization needed
+  mPxScene->copyContactData(mCudaContactBuffer.ptr, mMaxContactPairs, mCudaContactCount.ptr);
 
   mContactUpToDate = true;
 }
@@ -540,8 +540,10 @@ void PhysxSystemGpu::gpuQueryContactPairImpulses(PhysxGpuContactPairImpulseQuery
 
   copyContactData();
 
-  if (mContactCount) {
-    handle_contacts((PxGpuContactPair *)mCudaContactBuffer.ptr, mContactCount,
+  // Read contact count from GPU (no DeviceToHost sync)
+  int contactCount = readContactCountGpu(mCudaContactCount.ptr, mCudaStream);
+  if (contactCount) {
+    handle_contacts((PxGpuContactPair *)mCudaContactBuffer.ptr, contactCount,
                   (ActorPairQuery *)query.query.ptr, query.query.shape.at(0),
                   (Vec3 *)query.buffer.ptr, mCudaStream);
   }
@@ -557,8 +559,10 @@ void PhysxSystemGpu::gpuQueryContactBodyImpulses(PhysxGpuContactBodyImpulseQuery
 
   copyContactData();
 
-  if (mContactCount) {
-    handle_net_contact_force((PxGpuContactPair *)mCudaContactBuffer.ptr, mContactCount,
+  // Read contact count from GPU (no DeviceToHost sync)
+  int contactCount = readContactCountGpu(mCudaContactCount.ptr, mCudaStream);
+  if (contactCount) {
+    handle_net_contact_force((PxGpuContactPair *)mCudaContactBuffer.ptr, contactCount,
                            (ActorQuery *)query.query.ptr, query.query.shape.at(0),
                            (Vec3 *)query.buffer.ptr, mCudaStream);
   }

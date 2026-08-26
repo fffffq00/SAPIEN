@@ -326,5 +326,13 @@ void handle_net_contact_force(::physx::PxGpuContactPair *contacts, int contact_c
                                               out_forces);
 }
 
+int readContactCountGpu(int *d_count, cudaStream_t stream) {
+  int count = 0;
+  // Async copy only 4 bytes from GPU to host - negligible overhead
+  cudaMemcpyAsync(&count, d_count, sizeof(int), cudaMemcpyDeviceToHost, stream);
+  cudaStreamSynchronize(stream);
+  return count;
+}
+
 } // namespace physx
 } // namespace sapien

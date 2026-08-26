@@ -325,9 +325,10 @@ private:
 
   CudaArray mCudaContactBuffer;
   CudaArray mCudaContactCount;
+  int mMaxContactPairs{0}; // max contact pairs from PhysX GPU memory config
 
   bool mContactUpToDate{false};
-  int mContactCount{0}; // current contact count, valid only when contactUpdaToDate is true
+  int mContactCount{0}; // current contact count, valid only when contactUpToDate is true
   void copyContactData();
 };
 #else

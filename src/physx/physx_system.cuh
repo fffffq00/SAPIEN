@@ -122,5 +122,8 @@ void handle_net_contact_force(::physx::PxGpuContactPair *contacts, int contact_c
                               ActorQuery *query, int query_count, Vec3 *out_forces,
                               cudaStream_t stream);
 
+// Read contact count from GPU device memory (minimal 4-byte D2H copy)
+int readContactCountGpu(int *d_count, cudaStream_t stream);
+
 } // namespace physx
 } // namespace sapien
