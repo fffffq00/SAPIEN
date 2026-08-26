@@ -1070,7 +1070,7 @@ image: torch.Tensor = camera.get_picture_cuda()
 
 # use default backend
 image = camera.get_picture_cuda()
-torch_tensor = torch.as_tensor(image)
+torch_tensor = torch.from_dlpack(image)
 
 Warning: The camera must not be destroyed when the GPU tensor is in use by the
 consumer library. Make a copy if needed.
