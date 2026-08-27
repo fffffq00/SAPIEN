@@ -284,6 +284,7 @@ private:
   CudaEvent mCudaEventRecord;
   CudaEvent mCudaEventWait;
   cudaStream_t mCudaStream{0};
+  bool mOwnsCudaStream{false}; // true if mCudaStream was created by this system
 
   CudaArray mCudaRigidDynamicScratch;
   CudaArray mCudaLinkPoseScratch;

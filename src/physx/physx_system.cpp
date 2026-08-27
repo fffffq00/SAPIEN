@@ -105,6 +105,11 @@ PhysxSystemGpu::PhysxSystemGpu(std::shared_ptr<Device> device) {
   }
   mDevice = device;
 
+  // Default to a non-blocking stream so PhysX GPU work can overlap with other streams
+  checkCudaErrors(cudaSetDevice(device->cudaId));
+  checkCudaErrors(cudaStreamCreateWithFlags(&mCudaStream, cudaStreamNonBlocking));
+  mOwnsCudaStream = true;
+
   auto &config = mSceneConfig;
   PxSceneDesc sceneDesc(mEngine->getPxPhysics()->getTolerancesScale());
   sceneDesc.gravity = Vec3ToPxVec3(config.gravity);
@@ -422,7 +427,13 @@ void PhysxSystemGpu::checkGpuInitialized() const {
   }
 }
 
-void PhysxSystemGpu::gpuSetCudaStream(uintptr_t stream) { mCudaStream = (cudaStream_t)stream; }
+void PhysxSystemGpu::gpuSetCudaStream(uintptr_t stream) {
+  if (mOwnsCudaStream && mCudaStream) {
+    cudaStreamDestroy(mCudaStream);
+  }
+  mCudaStream = (cudaStream_t)stream;
+  mOwnsCudaStream = false;
+}
 
 std::shared_ptr<PhysxGpuContactPairImpulseQuery> PhysxSystemGpu::gpuCreateContactPairImpulseQuery(
     std::vector<std::pair<std::shared_ptr<PhysxRigidBaseComponent>,
@@ -1196,6 +1207,10 @@ PhysxSystemGpu::~PhysxSystemGpu() {
   }
   if (mPxCPUDispatcher) {
     mPxCPUDispatcher->release();
+  }
+  if (mOwnsCudaStream && mCudaStream) {
+    cudaStreamDestroy(mCudaStream);
+    mCudaStream = nullptr;
   }
 }
 #endif
