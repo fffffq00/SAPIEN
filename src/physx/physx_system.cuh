@@ -112,18 +112,18 @@ void root_vel_sapien_to_physx(void *physx_vel, void *sapien_data, void *index, i
                               int count, CUstream_st *);
 
 // fill out_forces with net contact forces per body pair. query stores sorted pairs of
-// interested actors and their indices corresponding to the out_forces array
-void handle_contacts(::physx::PxGpuContactPair *contacts, int contact_count, ActorPairQuery *query,
+// interested actors and their indices corresponding to the out_forces array.
+// d_contact_count is a device pointer to the actual contact count written by copyContactData.
+// Kernel reads *d_contact_count internally, no CPU-side sync needed.
+void handle_contacts(::physx::PxGpuContactPair *contacts, int max_contact_pairs,
+                     int const *d_contact_count, ActorPairQuery *query,
                      int query_count, Vec3 *out_forces, cudaStream_t stream);
 
 // fill out_forces with net contact forces per body. query stores sorted actors
 // and their indices corresponding to the out_forces array
-void handle_net_contact_force(::physx::PxGpuContactPair *contacts, int contact_count,
-                              ActorQuery *query, int query_count, Vec3 *out_forces,
-                              cudaStream_t stream);
-
-// Read contact count from GPU device memory (minimal 4-byte D2H copy)
-int readContactCountGpu(int *d_count, cudaStream_t stream);
+void handle_net_contact_force(::physx::PxGpuContactPair *contacts, int max_contact_pairs,
+                              int const *d_contact_count, ActorQuery *query,
+                              int query_count, Vec3 *out_forces, cudaStream_t stream);
 
 } // namespace physx
 } // namespace sapien

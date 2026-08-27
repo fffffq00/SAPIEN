@@ -540,13 +540,9 @@ void PhysxSystemGpu::gpuQueryContactPairImpulses(PhysxGpuContactPairImpulseQuery
 
   copyContactData();
 
-  // Read contact count from GPU (no DeviceToHost sync)
-  int contactCount = readContactCountGpu(mCudaContactCount.ptr, mCudaStream);
-  if (contactCount) {
-    handle_contacts((PxGpuContactPair *)mCudaContactBuffer.ptr, contactCount,
-                  (ActorPairQuery *)query.query.ptr, query.query.shape.at(0),
-                  (Vec3 *)query.buffer.ptr, mCudaStream);
-  }
+  handle_contacts((PxGpuContactPair *)mCudaContactBuffer.ptr, mMaxContactPairs,
+                  (int const *)mCudaContactCount.ptr, (ActorPairQuery *)query.query.ptr,
+                  query.query.shape.at(0), (Vec3 *)query.buffer.ptr, mCudaStream);
   cudaStreamSynchronize(mCudaStream);
 }
 
@@ -559,13 +555,9 @@ void PhysxSystemGpu::gpuQueryContactBodyImpulses(PhysxGpuContactBodyImpulseQuery
 
   copyContactData();
 
-  // Read contact count from GPU (no DeviceToHost sync)
-  int contactCount = readContactCountGpu(mCudaContactCount.ptr, mCudaStream);
-  if (contactCount) {
-    handle_net_contact_force((PxGpuContactPair *)mCudaContactBuffer.ptr, contactCount,
-                           (ActorQuery *)query.query.ptr, query.query.shape.at(0),
-                           (Vec3 *)query.buffer.ptr, mCudaStream);
-  }
+  handle_net_contact_force((PxGpuContactPair *)mCudaContactBuffer.ptr, mMaxContactPairs,
+                           (int const *)mCudaContactCount.ptr, (ActorQuery *)query.query.ptr,
+                           query.query.shape.at(0), (Vec3 *)query.buffer.ptr, mCudaStream);
   cudaStreamSynchronize(mCudaStream);
 }
 
@@ -718,7 +710,7 @@ void PhysxSystemGpu::gpuUpdateArticulationKinematics() {
   ensureCudaDevice();
 
   // wait for previous apply to finish
-  checkCudaErrors(cudaDeviceSynchronize());
+  checkCudaErrors(cudaStreamSynchronize(mCudaStream));
 
   // also synchronously wait for the update to finish
   mPxScene->updateArticulationsKinematic(nullptr);
@@ -993,14 +985,13 @@ void PhysxSystemGpu::syncPosesGpuToCpu() {
 std::vector<float> PhysxSystemGpu::gpuDownloadArticulationQpos(int index) {
   ensureCudaDevice();
   gpuFetchArticulationQpos();
-  cudaStreamSynchronize(mCudaStream);
 
   if (index < 0 || index >= mGpuArticulationMaxDof) {
     throw std::runtime_error("failed to download articulation qpos: invalid index");
   }
 
   std::vector<float> buffer(mGpuArticulationMaxDof);
-
+  // blocking cudaMemcpy on default stream implicitly waits for all GPU work
   cudaMemcpy(buffer.data(), &((float *)mCudaQposHandle.ptr)[index * mGpuArticulationMaxDof],
              mGpuArticulationMaxDof * sizeof(float), cudaMemcpyDeviceToHost);
   return buffer;
@@ -1008,11 +999,11 @@ std::vector<float> PhysxSystemGpu::gpuDownloadArticulationQpos(int index) {
 
 void PhysxSystemGpu::gpuUploadArticulationQpos(int index, Eigen::VectorXf const &q) {
   ensureCudaDevice();
-  cudaStreamSynchronize(mCudaStream);
   if (index < 0 || index >= mGpuArticulationMaxDof) {
     throw std::runtime_error("failed to download articulation qpos: invalid index");
   }
 
+  // blocking cudaMemcpy on default stream, no pre-sync needed
   cudaMemcpy(&((float *)mCudaQposHandle.ptr)[index * mGpuArticulationMaxDof], q.data(),
              q.size() * sizeof(float), cudaMemcpyHostToDevice);
   CudaArray cudaIndex({1}, "i4");
