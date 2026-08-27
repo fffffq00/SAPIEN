@@ -30,6 +30,8 @@
 #include "./physx_system.cuh"
 #include <cuda.h>
 #include <cuda_runtime.h>
+#include <tuple>
+#include <vector>
 #endif
 
 using namespace physx;
@@ -435,6 +437,59 @@ void PhysxSystemGpu::gpuSetCudaStream(uintptr_t stream) {
   mOwnsCudaStream = false;
 }
 
+// Host-side hash functions matching the device gpuHash() in physx_system.cu so that
+// a key hashes to the same slot on both host (build) and device (lookup).
+inline static int upperPowerOf2(int x);
+
+namespace detail {
+inline uint64_t hashBytes(uint64_t x) {
+  x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ull;
+  x = (x ^ (x >> 27)) * 0x94d049bb133111ebull;
+  x = x ^ (x >> 31);
+  return x;
+}
+inline uint64_t gpuHash(ActorPair const &p) {
+  uint64_t a = hashBytes(reinterpret_cast<uint64_t>(p.actor0));
+  uint64_t b = reinterpret_cast<uint64_t>(p.actor1) + 0x9e3779b97f4a7c15ull;
+  b = (b ^ (b >> 30)) * 0xbf58476d1ce4e5b9ull;
+  b = (b ^ (b >> 27)) * 0x94d049bb133111ebull;
+  b = b ^ (b >> 31);
+  return a ^ (b * 2);
+}
+inline uint64_t gpuHash(::physx::PxActor *actor) {
+  return hashBytes(reinterpret_cast<uint64_t>(actor));
+}
+} // namespace detail
+
+// Build an open-addressing hash table on the host and upload it to the GPU.
+// Returns the two GPU arrays (keys and values) and the table capacity.
+// keys/values are the query-indexed data; the table stores Key (empty = Key{}) -> value.
+template <typename Key>
+static std::tuple<CudaArray, CudaArray, int> buildGpuHashTable(std::vector<Key> &&keys,
+                                                               std::vector<int> &&values) {
+  const int n = static_cast<int>(keys.size());
+  int capacity = upperPowerOf2(n * 2);
+  if (capacity < 4) {
+    capacity = 4;
+  }
+
+  std::vector<Key> slotKeys(capacity);
+  std::vector<int> slotValues(capacity, -1);
+
+  for (int i = 0; i < n; ++i) {
+    uint64_t h = detail::gpuHash(keys[i]) & static_cast<uint64_t>(capacity - 1);
+    while (!(slotKeys[h] == Key{})) {
+      h = (h + 1) & static_cast<uint64_t>(capacity - 1);
+    }
+    slotKeys[h] = keys[i];
+    slotValues[h] = values[i];
+  }
+
+  CudaArray keyArr = CudaArray::FromData(slotKeys.data(), capacity * sizeof(Key));
+  CudaArray valArr = CudaArray::FromData(slotValues);
+  return {std::move(keyArr), std::move(valArr), capacity};
+}
+
 std::shared_ptr<PhysxGpuContactPairImpulseQuery> PhysxSystemGpu::gpuCreateContactPairImpulseQuery(
     std::vector<std::pair<std::shared_ptr<PhysxRigidBaseComponent>,
                           std::shared_ptr<PhysxRigidBaseComponent>>> const &bodyPairs) {
@@ -463,9 +518,19 @@ std::shared_ptr<PhysxGpuContactPairImpulseQuery> PhysxSystemGpu::gpuCreateContac
                              cudaMemcpyHostToDevice));
   CudaArray buffer({static_cast<int>(pairs.size()), 3}, "f4");
 
+  // Build GPU hash table over the pair keys for O(1) lookup in the kernels
+  auto hashKeys = std::vector<ActorPair>(pairs.size());
+  auto hashValues = std::vector<int>(pairs.size());
+  for (uint32_t i = 0; i < pairs.size(); ++i) {
+    hashKeys[i] = pairs[i].pair;
+    hashValues[i] = static_cast<int>(i);
+  }
+
   auto res = std::make_shared<PhysxGpuContactPairImpulseQuery>();
   res->query = std::move(query);
   res->buffer = std::move(buffer);
+  std::tie(res->hashKeys, res->hashValues, res->hashCapacity) =
+      buildGpuHashTable(std::move(hashKeys), std::move(hashValues));
   return res;
 }
 
@@ -492,10 +557,20 @@ std::shared_ptr<PhysxGpuContactBodyImpulseQuery> PhysxSystemGpu::gpuCreateContac
                              cudaMemcpyHostToDevice));
   CudaArray buffer({static_cast<int>(actors.size()), 3}, "f4");
 
+  // Build GPU hash table over the actor keys for O(1) lookup in the kernels
+  auto hashKeys = std::vector<::physx::PxActor *>(actors.size());
+  auto hashValues = std::vector<int>(actors.size());
+  for (uint32_t i = 0; i < actors.size(); ++i) {
+    hashKeys[i] = actors[i].actor;
+    hashValues[i] = static_cast<int>(i);
+  }
+
   // TODO: use dedicated type, do not reuse contact query
   auto res = std::make_shared<PhysxGpuContactBodyImpulseQuery>();
   res->query = std::move(query);
   res->buffer = std::move(buffer);
+  std::tie(res->hashKeys, res->hashValues, res->hashCapacity) =
+      buildGpuHashTable(std::move(hashKeys), std::move(hashValues));
   return res;
 }
 #endif
@@ -552,8 +627,11 @@ void PhysxSystemGpu::gpuQueryContactPairImpulses(PhysxGpuContactPairImpulseQuery
   copyContactData();
 
   handle_contacts((PxGpuContactPair *)mCudaContactBuffer.ptr, mMaxContactPairs,
-                  (int const *)mCudaContactCount.ptr, (ActorPairQuery *)query.query.ptr,
-                  query.query.shape.at(0), (Vec3 *)query.buffer.ptr, mCudaStream);
+                  (int const *)mCudaContactCount.ptr,
+                  GpuHashTable<ActorPair>{reinterpret_cast<ActorPair const *>(query.hashKeys.ptr),
+                                          reinterpret_cast<int const *>(query.hashValues.ptr),
+                                          query.hashCapacity},
+                  (ActorPairQuery *)query.query.ptr, (Vec3 *)query.buffer.ptr, mCudaStream);
   cudaStreamSynchronize(mCudaStream);
 }
 
@@ -566,9 +644,13 @@ void PhysxSystemGpu::gpuQueryContactBodyImpulses(PhysxGpuContactBodyImpulseQuery
 
   copyContactData();
 
-  handle_net_contact_force((PxGpuContactPair *)mCudaContactBuffer.ptr, mMaxContactPairs,
-                           (int const *)mCudaContactCount.ptr, (ActorQuery *)query.query.ptr,
-                           query.query.shape.at(0), (Vec3 *)query.buffer.ptr, mCudaStream);
+  handle_net_contact_force(
+      (PxGpuContactPair *)mCudaContactBuffer.ptr, mMaxContactPairs,
+      (int const *)mCudaContactCount.ptr,
+      GpuHashTable<::physx::PxActor *>{
+          reinterpret_cast<::physx::PxActor *const *>(query.hashKeys.ptr),
+          reinterpret_cast<int const *>(query.hashValues.ptr), query.hashCapacity},
+      (ActorQuery *)query.query.ptr, (Vec3 *)query.buffer.ptr, mCudaStream);
   cudaStreamSynchronize(mCudaStream);
 }
 

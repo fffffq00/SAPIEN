@@ -111,19 +111,30 @@ void root_pose_sapien_to_physx(void *physx_pose, void *sapien_data, void *index,
 void root_vel_sapien_to_physx(void *physx_vel, void *sapien_data, void *index, int link_count,
                               int count, CUstream_st *);
 
-// fill out_forces with net contact forces per body pair. query stores sorted pairs of
+// A GPU hash table built on the host, uploaded once, and read-only on the device.
+// Open addressing with linear probing. Each key maps to a value (the query index).
+// Key{} is used as the empty-slot marker, so keys must be a type where Key{} == default is
+// never equal to a real key (addresses are never null for live actors).
+template <typename Key> struct GpuHashTable {
+  Key const *keys;
+  int const *values;
+  int capacity; // power of two
+};
+
+// fill out_forces with net contact forces per body pair. query stores pairs of
 // interested actors and their indices corresponding to the out_forces array.
 // d_contact_count is a device pointer to the actual contact count written by copyContactData.
 // Kernel reads *d_contact_count internally, no CPU-side sync needed.
 void handle_contacts(::physx::PxGpuContactPair *contacts, int max_contact_pairs,
-                     int const *d_contact_count, ActorPairQuery *query,
-                     int query_count, Vec3 *out_forces, cudaStream_t stream);
+                     int const *d_contact_count, GpuHashTable<ActorPair> const &table,
+                     ActorPairQuery *query, Vec3 *out_forces, cudaStream_t stream);
 
-// fill out_forces with net contact forces per body. query stores sorted actors
+// fill out_forces with net contact forces per body. query stores actors
 // and their indices corresponding to the out_forces array
 void handle_net_contact_force(::physx::PxGpuContactPair *contacts, int max_contact_pairs,
-                              int const *d_contact_count, ActorQuery *query,
-                              int query_count, Vec3 *out_forces, cudaStream_t stream);
+                              int const *d_contact_count,
+                              GpuHashTable<::physx::PxActor *> const &table, ActorQuery *query,
+                              Vec3 *out_forces, cudaStream_t stream);
 
 } // namespace physx
 } // namespace sapien

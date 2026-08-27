@@ -21,6 +21,40 @@
 namespace sapien {
 namespace physx {
 
+__device__ inline uint64_t gpuHash(ActorPair const &p) {
+  uint64_t a = reinterpret_cast<uint64_t>(p.actor0);
+  uint64_t b = reinterpret_cast<uint64_t>(p.actor1);
+  // splitmix64 style mixing
+  uint64_t h = a;
+  h = (h ^ (h >> 30)) * 0xbf58476d1ce4e5b9ull;
+  h = (h ^ (h >> 27)) * 0x94d049bb133111ebull;
+  h = h ^ (h >> 31);
+  uint64_t g = b + 0x9e3779b97f4a7c15ull;
+  g = (g ^ (g >> 30)) * 0xbf58476d1ce4e5b9ull;
+  g = (g ^ (g >> 27)) * 0x94d049bb133111ebull;
+  g = g ^ (g >> 31);
+  return h ^ (g * 2);
+}
+
+__device__ inline uint64_t gpuHash(::physx::PxActor *actor) {
+  uint64_t x = reinterpret_cast<uint64_t>(actor);
+  x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ull;
+  x = (x ^ (x >> 27)) * 0x94d049bb133111ebull;
+  x = x ^ (x >> 31);
+  return x;
+}
+
+template <typename Key> __device__ int gpuHashLookup(GpuHashTable<Key> const &t, Key key) {
+  uint64_t h = gpuHash(key) & (t.capacity - 1);
+  while (!(t.keys[h] == Key{}) && !(t.keys[h] == key)) {
+    h = (h + 1) & (t.capacity - 1);
+  }
+  if (t.keys[h] == key) {
+    return t.values[h];
+  }
+  return -1;
+}
+
 __global__ void body_data_physx_to_sapien_kernel(SapienBodyData *__restrict__ sapien_data,
                                                  PhysxBodyData *__restrict__ physx_data,
                                                  Vec3 *__restrict__ offset, int count) {
@@ -142,40 +176,11 @@ __global__ void root_vel_sapien_to_physx_kernel(PhysxVelocity *__restrict__ phys
   physx_vel[ai].w = sd.w;
 }
 
-__device__ int binary_search(ActorPairQuery const *__restrict__ arr, int count, ActorPair x) {
-  int low = 0;
-  int high = count - 1;
-  while (low <= high) {
-    int mid = low + (high - low) / 2;
-    if (arr[mid].pair == x)
-      return mid;
-    if (arr[mid].pair < x)
-      low = mid + 1;
-    else
-      high = mid - 1;
-  }
-  return -1;
-}
-
-__device__ int binary_search(ActorQuery const *__restrict__ arr, int count, ::physx::PxActor *x) {
-  int low = 0;
-  int high = count - 1;
-  while (low <= high) {
-    int mid = low + (high - low) / 2;
-    if (arr[mid].actor == x)
-      return mid;
-    if (arr[mid].actor < x)
-      low = mid + 1;
-    else
-      high = mid - 1;
-  }
-  return -1;
-}
-
 __global__ void handle_contacts_kernel(::physx::PxGpuContactPair *__restrict__ contacts,
                                        int const *__restrict__ d_contact_count,
+                                       GpuHashTable<ActorPair> const table,
                                        ActorPairQuery *__restrict__ query,
-                                       int query_count, Vec3 *__restrict__ out_forces) {
+                                       Vec3 *__restrict__ out_forces) {
   int g = blockIdx.x * blockDim.x + threadIdx.x;
   int contact_count = *d_contact_count;
   if (g >= contact_count) {
@@ -185,7 +190,7 @@ __global__ void handle_contacts_kernel(::physx::PxGpuContactPair *__restrict__ c
   int order = 0;
   ActorPair pair = makeActorPair(contacts[g].actor0, contacts[g].actor1, order);
 
-  int index = binary_search(query, query_count, pair);
+  int index = gpuHashLookup(table, pair);
   if (index < 0) {
     return;
   }
@@ -216,8 +221,9 @@ __global__ void handle_contacts_kernel(::physx::PxGpuContactPair *__restrict__ c
 
 __global__ void handle_net_contact_force_kernel(::physx::PxGpuContactPair *__restrict__ contacts,
                                                 int const *__restrict__ d_contact_count,
+                                                GpuHashTable<::physx::PxActor *> const table,
                                                 ActorQuery *__restrict__ query,
-                                                int query_count, Vec3 *__restrict__ out_forces) {
+                                                Vec3 *__restrict__ out_forces) {
   int g = blockIdx.x * blockDim.x + threadIdx.x;
   int contact_count = *d_contact_count;
   if (g >= contact_count) {
@@ -227,8 +233,8 @@ __global__ void handle_net_contact_force_kernel(::physx::PxGpuContactPair *__res
   ::physx::PxActor *actor0 = contacts[g].actor0;
   ::physx::PxActor *actor1 = contacts[g].actor1;
 
-  int index0 = binary_search(query, query_count, actor0);
-  int index1 = binary_search(query, query_count, actor1);
+  int index0 = gpuHashLookup(table, actor0);
+  int index1 = gpuHashLookup(table, actor1);
 
   if (index0 < 0 && index1 < 0) {
     return;
@@ -317,18 +323,19 @@ void root_vel_sapien_to_physx(void *physx_vel, void *sapien_data, void *index, i
 }
 
 void handle_contacts(::physx::PxGpuContactPair *contacts, int max_contact_pairs,
-                     int const *d_contact_count, ActorPairQuery *query,
-                     int query_count, Vec3 *out_forces, cudaStream_t stream) {
+                     int const *d_contact_count, GpuHashTable<ActorPair> const &table,
+                     ActorPairQuery *query, Vec3 *out_forces, cudaStream_t stream) {
   handle_contacts_kernel<<<(max_contact_pairs + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE, 0,
-                           stream>>>(contacts, d_contact_count, query, query_count, out_forces);
+                           stream>>>(contacts, d_contact_count, table, query, out_forces);
 }
 
 void handle_net_contact_force(::physx::PxGpuContactPair *contacts, int max_contact_pairs,
-                              int const *d_contact_count, ActorQuery *query,
-                              int query_count, Vec3 *out_forces, cudaStream_t stream) {
+                              int const *d_contact_count,
+                              GpuHashTable<::physx::PxActor *> const &table, ActorQuery *query,
+                              Vec3 *out_forces, cudaStream_t stream) {
   handle_net_contact_force_kernel<<<(max_contact_pairs + BLOCK_SIZE - 1) / BLOCK_SIZE,
                                     BLOCK_SIZE, 0, stream>>>(
-      contacts, d_contact_count, query, query_count, out_forces);
+      contacts, d_contact_count, table, query, out_forces);
 }
 
 } // namespace physx

@@ -139,11 +139,19 @@ private:
 struct PhysxGpuContactPairImpulseQuery {
   CudaArray query;
   CudaArray buffer;
+  // hash table storage: keys (ActorPair) and their query-index values
+  CudaArray hashKeys;
+  CudaArray hashValues;
+  int hashCapacity{0};
 };
 
 struct PhysxGpuContactBodyImpulseQuery {
   CudaArray query;
   CudaArray buffer;
+  // hash table storage: keys (PxActor*) and their query-index values
+  CudaArray hashKeys;
+  CudaArray hashValues;
+  int hashCapacity{0};
 };
 
 class PhysxSystemGpu : public PhysxSystem {
